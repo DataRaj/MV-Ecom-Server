@@ -1,10 +1,10 @@
 import { relations } from 'drizzle-orm';
 import {
-  integer,
-  pgTable,
-  timestamp,
-  uuid,
-  varchar,
+    integer,
+    pgTable,
+    timestamp,
+    uuid,
+    varchar,
 } from 'drizzle-orm/pg-core';
 import { user } from 'src/users/entities/user.entity';
 
@@ -30,6 +30,7 @@ export const address = pgTable('address', {
 
 export const addressToUserRelation = relations(address, ({ one }) => ({
   user: one(user, {
+     
     fields: [address.userId],
     references: [user.id],
   }),

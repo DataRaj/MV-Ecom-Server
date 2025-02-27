@@ -1,59 +1,83 @@
 import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
-import { userAuth } from '../entities/user-auth.entity';
 import { randomUUID } from 'crypto';
-import { Response } from 'express';
-import { DRIZZLE } from 'src/database/drizzle.constant';
+import { eq } from 'drizzle-orm';
+import { FastifyReply } from 'fastify';
 import { DrizzleDatabase } from 'src/database/database.provider';
+import { DRIZZLE } from 'src/database/drizzle.constant';
+import { userAuth } from '../entities/user-auth.entity';
 
 @Injectable()
 export class UserAuthService {
-  constructor(
-    @Inject(DRIZZLE)
-    private readonly db: DrizzleDatabase
-    
-  ) {}
-  private readonly COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days
+  private readonly COOKIE_NAME = 'auth_key';
+  private readonly COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-  async login(userId: string, res: Response) {
+  constructor(@Inject(DRIZZLE) private readonly db: DrizzleDatabase) {}
+
+  async login(userId: string, res: FastifyReply) {
     const authKey = randomUUID();
-    const expiresAt = new Date(Date.now() + this.COOKIE_MAX_AGE);
+    const expiresAt = new Date(Date.now() + this.COOKIE_MAX_AGE_MS);
 
-    await this.db.insert(userAuth).values({ userId, authKey, expiresAt, isActive: true });
+    await this.db
+      .insert(userAuth)
+      .values({ userId, authKey, expiresAt, isActive: true });
 
     this.setAuthCookie(res, authKey);
     return { message: 'Logged in successfully' };
   }
 
-  async verifySession(authKey: string, res: Response) {
-    const session = await this.db.select().from(userAuth).where((eq(userAuth.authKey, authKey), eq(userAuth.isActive, true))).then((rows) => rows[0]);
+  async verifySession(authKey: string, res: FastifyReply) {
+    const session = await this.findActiveSession(authKey);
 
+    if (!session) {
+      throw new UnauthorizedException('Session expired');
+    }
 
-    if (!session || new Date() > session.expiresAt) throw new UnauthorizedException('Session expired');
-
-    // **Refresh expiration if less than 3 days remain**
-    if (new Date(session.expiresAt).getTime() - Date.now() < 3 * 24 * 60 * 60 * 1000) {
-      const newExpiry = new Date(Date.now() + this.COOKIE_MAX_AGE);
-      await this.db.update(userAuth).set({ expiresAt: newExpiry }).where(eq(userAuth.authKey, authKey));
-
-      this.setAuthCookie(res, authKey);
+    // Refresh cookie if less than 3 days left
+    if (session.expiresAt.getTime() - Date.now() < 3 * 24 * 60 * 60 * 1000) {
+      await this.refreshSession(authKey, res);
     }
 
     return { message: 'Session verified' };
   }
 
-  async logout(authKey: string, res: Response) {
-    await this.db.update(userAuth).set({ isActive: false }).where(eq(userAuth.authKey, authKey));
-    res.clearCookie('auth_key');
+  async logout(authKey: string, res: FastifyReply) {
+    await this.db
+      .update(userAuth)
+      .set({ isActive: false })
+      .where(eq(userAuth.authKey, authKey));
+    this.clearAuthCookie(res);
     return { message: 'Logged out' };
   }
 
-  private setAuthCookie(res: Response, authKey: string) {
-    res.cookie('auth_key', authKey, {
+  /** Private Helpers */
+  private async findActiveSession(authKey: string) {
+    return this.db
+      .select()
+      .from(userAuth)
+      .where(eq(eq(userAuth.authKey, authKey), eq(userAuth.isActive, true)))
+      .then((rows) => rows[0] || null);
+  }
+
+  private async refreshSession(authKey: string, res: FastifyReply) {
+    const newExpiry = new Date(Date.now() + this.COOKIE_MAX_AGE_MS);
+    await this.db
+      .update(userAuth)
+      .set({ expiresAt: newExpiry })
+      .where(eq(userAuth.authKey, authKey));
+    this.setAuthCookie(res, authKey);
+  }
+
+  private setAuthCookie(res: FastifyReply, authKey: string) {
+    res.setCookie(this.COOKIE_NAME, authKey, {
       httpOnly: true,
       secure: true,
       sameSite: 'strict',
-      maxAge: this.COOKIE_MAX_AGE,
+      path: '/',
+      maxAge: this.COOKIE_MAX_AGE_MS / 1000, // Fastify uses seconds
     });
+  }
+
+  private clearAuthCookie(res: FastifyReply) {
+    res.clearCookie(this.COOKIE_NAME, { path: '/' });
   }
 }

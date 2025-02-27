@@ -1,4 +1,4 @@
-  import { relations } from 'drizzle-orm';
+import { relations } from 'drizzle-orm';
 import {
     boolean,
     index,
@@ -38,6 +38,8 @@ export const user = pgTable(
     };
   },
 );
+
+
 
 export const customerToAddress = relations(user, ({ one }) => ({
   address: one(address),
